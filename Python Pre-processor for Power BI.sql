@@ -1,15 +1,29 @@
 --/
 
-create or replace PYTHON3 script "ds_lakehouse_benchmark_lhdev"."fg_script_with_identifiers" AS
+create or replace PYTHON3 script "ds_lakehouse_benchmark_lhdev"."fg_script" AS
 import re    
 def convert_to_exasol_sql(input_sql):
-    exasol_sql = input_sql.replace("`", '"')
+    
+    # This part adds an alias if alias is missing after the CAST() function. 
+    def cast_add_alias(match): 
+        expr = match.group(1).strip()
+        type_ = match.group(2).strip().upper()
+
+        expr_clean = expr.replace('`', '').replace('"', '')
+        base = re.sub(r"[^a-zA-Z0-9_]", "", expr_clean.split('.')[-1])
+
+        return f'CAST("{expr_clean}" AS {type_}) AS "{base}"'
+
+    pattern_missing_alias = re.compile(
+    r'CAST\s*\(\s*([^)]+?)\s+AS\s+([A-Z0-9_]+(?:\(\d+\))?)\s*\)(?!\s+AS)', 
+    flags=re.IGNORECASE
+)
     
     sql_keywords = {
-        "all", "alter", "and", "as", "between", "by", "case", "create", "cross", "concat", "delete", "desc", "distinct", "drop", "else", "end", "endif",
-        "except", "false", "from", "full", "group", "having", "if", "ifnull", "in", "inner", "insert", "interval", "is", "join", "left", "limit", "long", "lower",
-        "like", "not", "null", "offset", "on", "or", "order", "outer", "over", "partition", "select", "then", "true", "update", "upper", "union", "varchar", "when", "where",
-        "with",
+        "all", "alter", "and", "as", "at", "between", "by", "case", "create", "cross", "concat", "delete", "desc", "distinct", "drop", "else", "end", "endif",
+        "except", "false", "flush", "from", "full", "group", "having", "if", "ifnull", "import", "in", "inner", "insert", "interval", "into", "is", "join", "kill", "left", "limit", "long", "lower",
+        "like", "not", "null", "offset", "on", "or", "order", "outer", "over", "partition", "replace", "select", "session", "statement", "statistics", "system", "table", "then", "true", "truncate", "update", "upper", "union", "varchar", "view", "when", "where",
+        "with", 
         
         #  Databricks Functions
         "abs", "acos", "acosh", "add_months", "aes_decrypt", "aes_encrypt", "aggregate", "ai_analyze_sentiment", 
@@ -86,7 +100,7 @@ def convert_to_exasol_sql(input_sql):
         
         # Check if the word is a SQL keyword (already in the list)
         if word.lower() in sql_keywords:
-            # If the word is preceded by a dot (.) — likely referencing a column in a CTE or table alias
+            # If the word is preceded by a dot (.) â€” likely referencing a column in a CTE or table alias
             if re.search(r'\.\s*\b' + re.escape(word) + r'\b', input_sql, flags=re.IGNORECASE):
                 return False  # Treat it as a column/identifier in a CTE or table
             
@@ -130,10 +144,21 @@ def convert_to_exasol_sql(input_sql):
                 normalized_parts.append(normalized)
       
         return ''.join(normalized_parts)
-
-    exasol_sql = normalize_sql_safely(exasol_sql)
     
-    exasol_sql = re.sub(r"CAST\(([^)]+) AS STRING\)", r"CAST(\1 AS CHAR(256))", exasol_sql, flags=re.IGNORECASE)
+    # This part converts STRING to CHAR(256) coming within CAST Function
+    exasol_sql = re.sub(
+    r"CAST\(([^)]+) AS STRING\)", 
+    r"CAST(\1 AS CHAR(256))", 
+    input_sql, 
+    flags=re.IGNORECASE
+    )
+
+    exasol_sql = re.sub(pattern_missing_alias, cast_add_alias, exasol_sql)  # step 1: replace CAST AS STRING
+    exasol_sql = exasol_sql.replace("`", '"')                        # step 2: replace backticks with double quotes
+    exasol_sql = normalize_sql_safely(exasol_sql)   
+    exasol_sql = re.sub(r"<> *''", 'IS NOT NULL', exasol_sql)
+    exasol_sql = re.sub(r"!= *''", 'IS NOT NULL', exasol_sql)
+    exasol_sql = re.sub(r'"d"(\s*\'\d{4}-\d{2}-\d{2}\')', r'd\1', exasol_sql, flags=re.IGNORECASE)
     return exasol_sql
     
 def adapter_call(request):
